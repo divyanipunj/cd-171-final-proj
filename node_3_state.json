@@ -17,9 +17,7 @@
       "tag": "COMMITTED"
     }
   ],
-  "seq_num": {
-    "0": 0
-  },
+  "seq_num": {},
   "promised_ballot": {
     "0": [
       0,

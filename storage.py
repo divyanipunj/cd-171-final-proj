@@ -22,7 +22,7 @@ class Storage:
         for key, value in data.get("table", {}).items():
             table[int(key)] = value
 
-        for b in data["blockchain"]:
+        for b in data.get("blockchain", []):
             block = Block(
                 sender_id=b["sender_id"],
                 receiver_id=b["receiver_id"],
@@ -34,21 +34,28 @@ class Storage:
             )
             blockchain.chain.append(block)
 
-        seq_num.update(data.get("seq_num", {}))
-        promised_ballot.update(data.get("promised_ballot", {}))
-        accepted_ballot.update(data.get("accepted_ballot", {}))
-        accepted_val.update(data.get("accepted_val", {}))
+        for key, value in data.get("seq_num", {}).items():
+            seq_num[int(key)] = value
+        
+        for key, value in data.get("promised_ballot", {}).items():
+            promised_ballot[int(key)] = tuple(value) if value else value
+        
+        for key, value in data.get("accepted_ballot", {}).items():
+            accepted_ballot[int(key)] = tuple(value) if value else value
+        
+        for key, value in data.get("accepted_val", {}).items():
+            accepted_val[int(key)] = value
 
         print(f"State loaded for node {self.node_id}: {len(blockchain.chain)} blocks, balances {table}")
 
     def persist(self, blockchain, table, seq_num, promised_ballot, accepted_ballot, accepted_val):
         data = {
-            "table": table,
+            "table": {str(k): v for k, v in table.items()},
             "blockchain": [],
-            "seq_num": seq_num,
-            "promised_ballot": promised_ballot,
-            "accepted_ballot": accepted_ballot,
-            "accepted_val": accepted_val
+            "seq_num": {str(k): v for k, v in seq_num.items()},
+            "promised_ballot": {str(k): list(v) if v else v for k, v in promised_ballot.items()},
+            "accepted_ballot": {str(k): list(v) if v else v for k, v in accepted_ballot.items()},
+            "accepted_val": {str(k): v for k, v in accepted_val.items()}
         }
 
         for block in blockchain.chain:
