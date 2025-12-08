@@ -13,9 +13,9 @@ run_nodes:
 	sleep 1; \
 	python3 node.py -port $(PORT3) -node 3 & echo $$! >> pids.txt; \
 	sleep 1; \
-	python3 node.py -port $(PORT4) -node 3 & echo $$! >> pids.txt; \
+	python3 node.py -port $(PORT4) -node 4 & echo $$! >> pids.txt; \
 	sleep 1; \
-	python3 node.py -port $(PORT5) -node 3 & echo $$! >> pids.txt; \
+	python3 node.py -port $(PORT5) -node 5 & echo $$! >> pids.txt; \
 
 stop:
 	@echo "Killing processes..."
