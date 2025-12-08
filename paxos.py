@@ -296,9 +296,6 @@ def moneyTransfer(sender_id, receiver_id, amount):
     if table[sender_id] < amount:
         print("Insufficient funds.")
         return    
-    
-    # check if up to date w blockchain (preemptive measure)
-    req_help()
 
     decided = paxos(sender_id, receiver_id, amount)
 
