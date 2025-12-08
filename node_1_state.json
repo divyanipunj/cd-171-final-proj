@@ -1,0 +1,24 @@
+{
+  "table": {
+    "1": 100,
+    "2": 100,
+    "3": 100,
+    "4": 100,
+    "5": 100
+  },
+  "blockchain": [
+    {
+      "sender_id": 1,
+      "receiver_id": 2,
+      "amount": 50,
+      "prev_hash": 0,
+      "nonce": "9fea81d8b9364d31b8cfb3ddfe086fce",
+      "hash": "7e23cf2d5c9c0bd295753518454ab45a20777336e530c27ddf769b6ffb366f31",
+      "tag": "COMMITTED"
+    }
+  ],
+  "seq_num": {},
+  "promised_ballot": {},
+  "accepted_ballot": {},
+  "accepted_val": {}
+}

@@ -1,129 +1,122 @@
 import socket
 import json
 import threading
-import argparse
-
-parser = argparse.ArgumentParser()
-parser.add_argument('-port', type=int, required=True)
-parser.add_argument('-node', type=int, required=True)
-args = parser.parse_args()
+import time
+from storage import Storage
 
 DEST_HOST = "localhost"
-MY_PORT = args.port
-NODE_ID = args.node # associated node with port
-PORTS = [8001, 8002, 8003, 8004, 8005] 
-MY_PORTS = [port for port in PORTS if port != MY_PORT] # exclude own port when running
 
-# process paxos vars
-promised_ballot = {} # highest ballot promised at each depth
-accepeted_ballot = {} # ballot accepted at each depth
-accepeted_val = {} # value accepted at each depth
-seq_num = {} # seq_num[depth] = number of attempted proposals at depth
+class Paxos:
+    def __init__(self, node_id, my_port, ports):
+        self.node_id = node_id
+        self.my_port = my_port
+        self.other_ports = [port for port in ports if port != my_port]
 
-#  the node vars shoved in with process stuff
-blockchain = []
-table = {i: 100 for i in range(1,6)}
+        self.promised_ballot = {}
+        self.accepted_ballot = {}
+        self.accepted_val = {}
+        self.seq_num = {}
+        self.storage = Storage(self.node_id)
 
-# DESIGN CHOICES (that you can change, chloe):
-# types of messages = prepare, promise, accept, accepted, decision, reject
-# ballot = (sequence_number[depth], node_id, depth)
-# each message is slightly diferent based on message type
-
-# send message to a process
-def send_message(port, message):
-    try: 
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(5) # need to set time out ??
-            s.connect((DEST_HOST, port))
-            s.sendall(json.dumps(message).encode())
-            data = s.recv(4096)
-            return json.loads(data.decode()) if data else None # change up?
-    except ConnectionRefusedError: # i don't what kind of error will happn, adjust accordingly
-        return None
-
-# in the background, need to listen for messages from all proccesses. re-use client server code.
-def handle_all_connections(conn):
-    with conn: 
-        data = conn.recv(4096)
-        if not data:
-            return
-        
-        text = data.decode()
-        response = None
+    def send_message(self, port, message):
         try:
-            message = json.loads(text)
-            if message["type"] == "PREPARE":
-                response = handle_proposal(message)
-            elif message["type"] == "ACCEPT":
-                response = handle_accept(message)
-            elif message["type"] == "DECISION":
-                response = handle_decision(message)
-            if response: 
-                conn.sendall(json.dumps(response).encode())
-        except json.JSONDecodeError:
-            #if error decoding, just return
-            return
+            print(f"[{self.my_port}] Sending {message['type']} to port {port} with ballot {message.get('ballot')}")
+            time.sleep(3) # 3 second delay
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(5)
+                s.connect((DEST_HOST, port))
+                s.sendall(json.dumps(message).encode())
+                data = s.recv(4096)
+                if data:
+                    return json.loads(data.decode())
+                else:
+                    return None
+        except Exception as e:
+            return None
 
-def listener(): 
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s.bind((DEST_HOST, MY_PORT))
-        s.listen()
-        print(f"Client {NODE_ID} listening on port {MY_PORT}")
-        
-        while True:
-            conn, addr = s.accept()
-            threading.Thread(target=handle_all_connections, args=(conn,), daemon=True).start()
+    def listener(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind((DEST_HOST, self.my_port))
+            s.listen()
+            print(f"[{self.node_id} listening on port {self.my_port}")
 
-# a process attempts to run paxos. 
-def paxos():
-    depth = len(blockchain)
+            while True:
+                conn, _ = s.accept()
+                threading.Thread(target=self.handle_all_connections, args=(conn,), daemon=True).start()
 
-    if(depth not in seq_num):
-        seq_num[depth] = 0
-    else:
-        seq_num[depth] += 1
-
-    ballot = (seq_num[depth], NODE_ID, depth)
-    message = {"type": "PREPARE", "ballot": ballot}
-
-    responses_for_prepare = []
-    response = None
-    for port in MY_PORTS: 
-        response = send_message(port, message)
-        
-        if response:
-            responses_for_prepare.append(response)
-
-    # check if any previous values were accepted:
-    nonce = None
-    highest_ballot_accepted = None
-    accept_ballot_count = 0
-    for response in responses_for_prepare:
-        if response["type"] == "PROMISE" and response["accepted_num"] is not None: # CASE WHERE PREV VALUE ACCEPTED
-            accept_ballot_count += 1
-            old_accepted = tuple(response["accepted_num"])
-
-            if(highest_ballot_accepted is None or old_accepted > highest_ballot_accepted):
-                highest_ballot_accepted = old_accepted
-                nonce = response["accepted_val"]
-        elif response["type"] == "PROMISE":
-            accept_ballot_count += 1
-    
-    if accept_ballot_count >= 2: #count self in majority so need 2 others to accept
-        if nonce is None:
-            # now process is "leader" and will try to find anonce
-            # chloe: find a nonce
-            nonce = {"block": "blah", "nonce": 67} 
-
-            # once the anonce is found, send accept messages
-        message = {"type": "ACCEPT", "ballot": ballot, "nonce": nonce}
+    def handle_all_connections(self, conn):
+        with conn:
+            data = conn.recv(4096)
+            if not data:
+                return
             
-        # once a leader has found an anonce, send an accept message to all other processes
-        responses_for_accept = []
-        for port in MY_PORTS:
-            response = send_message(port, message)
+            message = json.loads(data.decode())
+            response = None
 
+            if message["type"] == "PREPARE":
+                response = self.handle_prepare(message)
+            elif message["type"] == "ACCEPT":
+                response = self.handle_accept(message)
+            elif message["type"] == "DECISION":
+                response = self.handle_decision(message)
+            if response:
+                conn.sendall(json.dumps(response).encode())
+
+    def prepare(self, depth):
+        if depth not in self.seq_num:
+            self.seq_num[depth] = 0
+        else:
+            self.seq_num[depth] += 1
+
+        ballot = (self.seq_num[depth], self.node_id, depth)
+        prepare = {"type": "PREPARE", "ballot": ballot}
+
+        promises = []
+        for port in self.other_ports:
+            response = self.send_message(port, prepare)
+            if response:
+                promises.append(response)
+
+        if len(promises) < 2:
+            print(f"[{self.my_port}] Not enough promises.")
+            return None, None
+        
+        return ballot, promises
+
+        # now leader has been elected, can calculate nonce
+    
+    def find_value(self, proposal, promises):
+        chosen_val = proposal.copy() # ? 
+        highest_ballot_accepted = None
+        accept_ballot_count = 0
+        for response in promises:
+            if response["type"] == "PROMISE" and response["accepted_num"] is not None: # CASE WHERE PREV VALUE ACCEPTED
+                accept_ballot_count += 1
+                old_accepted = tuple(response["accepted_num"])
+
+                if highest_ballot_accepted is None or old_accepted > highest_ballot_accepted:
+                    highest_ballot_accepted = old_accepted
+                    chosen_val = response["accepted_val"]
+            elif response["type"] == "PROMISE":
+                accept_ballot_count += 1
+        
+        if accept_ballot_count >= 2: # count self in majority so need 2 others to accept
+            if chosen_val is None:
+                # now process is "leader" and will try to find a nonce
+                # chloe: find a nonce
+                return True
+        return False
+
+        # once the a nonce is found, send accept messages
+    
+    def accept(self, ballot, value):
+        message = {"type": "ACCEPT", "ballot": ballot, "val": value}
+            
+        # once a leader has found an a nonce, send an accept message to all other processes
+        responses_for_accept = []
+        for port in self.other_ports:
+            response = self.send_message(port, message)
             if response: 
                 responses_for_accept.append(response)
         
@@ -131,75 +124,58 @@ def paxos():
         for response in responses_for_accept:
             if response["type"] == "ACCEPTED":
                 accepted += 1
-        if accepted >= 2: #count self in majority so need 2 others to accept
+        if accepted >= 2: # count self in majority so need 2 others to accept
             # majority accepted, so a decision is made. send out the value
-            msg = {"type": "DECISION", "ballot": message["ballot"], "nonce": nonce}
+            decision = {"type": "DECISION", "ballot": ballot, "val": value}
 
-            for port in MY_PORTS:
-                send_message(port, msg)
-
-            blockchain.append(nonce) # update blockchain accordingly (chloe got this covered)
+            for port in self.other_ports:
+                self.send_message(port, decision)
 
             return 0
         else:
             return -1
-    else:
-        return -1
 
-# handle or decline a proposal (leader election)
-def handle_proposal(message):
-    ballot = tuple(message["ballot"])
-    msg_seq_num, node_id, depth = ballot
+    def handle_prepare(self, msg):
+        ballot = tuple(msg["ballot"])
+        depth = ballot[2]
 
-    if depth not in promised_ballot:
-        promised_ballot[depth] = (-1, -1, -1) # ballor has not been seen before, initialize.
+        if depth not in self.promised_ballot:
+            self.promised_ballot[depth] = (-1, -1, -1)
 
-    # promised_ballot vs incoming ballot ?
-    if promised_ballot[depth][0] < msg_seq_num or ((promised_ballot[depth][0] == msg_seq_num and promised_ballot[depth][1] < node_id)):
-        # then accept prepare
-        promised_ballot[depth] = message["ballot"]
-        response = {"type": "PROMISE", "ballot": message["ballot"],"node_id": NODE_ID, "accepted_num": accepeted_ballot.get(depth), "accepted_val": accepeted_val.get(depth)}
-        return response
-    else:
-        response = {"type": "REJECT", "ballot": promised_ballot[depth], "node_id": NODE_ID} # return the ballot that i have accepted
-        return response
+        if ballot > tuple(self.promised_ballot[depth]):
+            self.promised_ballot[depth] = msg["ballot"]
+            print(f"[{self.my_port}] Promising ballot {ballot} at depth {depth}")
+            return {
+                "type": "PROMISE",
+                "accepted_num": self.accepted_ballot.get(depth),
+                "accepted_val": self.accepted_val.get(depth)
+            }
 
-# once leader finds an anonce, go ahead and accept it
-def handle_accept(message):
-    ballot = tuple(message["ballot"])
-    depth = ballot[2]
+        print(f"[{self.my_port}] Rejecting ballot {ballot} at depth {depth}")
+        return {
+            "type": "REJECT",
+            "accepted_num": self.accepted_ballot.get(depth),
+            "accepted_val": self.accepted_val.get(depth)
+        }
 
-    if depth not in promised_ballot:
-        promised_ballot[depth] = (-1, -1, -1) # ballot for depth has not been seen before, initialize.
-    
-    if promised_ballot[depth][0] < ballot[0] or (promised_ballot[depth][0] == ballot[0] and promised_ballot[depth][1] <= ballot[1]):
-        accepeted_ballot[depth] = ballot
-        accepeted_val[depth] = message["nonce"]
-        return {"type": "ACCEPTED", "ballot": ballot, "node_id": NODE_ID}
-    else:
-        return {"type": "REJECT", "node_id": NODE_ID, "ballot": promised_ballot[depth]} # return the ballot that i have accepted
+    def handle_accept(self, msg):
+        ballot = tuple(msg["ballot"])
+        depth = ballot[2]
 
-# once a leader had made a decision, go ahead and implement it
-def handle_decision(message):
-    ballot = tuple(message["ballot"])
-    depth = ballot[2]
-    nonce = message["nonce"]
+        if depth not in self.promised_ballot:
+            self.promised_ballot[depth] = (-1, -1, -1)
 
-    # update blockchain accordingly
-    if len(blockchain) == depth:
-        blockchain.append(nonce)
+        if ballot >= tuple(self.promised_ballot[depth]):
+            self.accepted_ballot[depth] = ballot
+            self.accepted_val[depth] = msg["val"]
+            print(f"[{self.my_port}] Accepted value {msg['val']} with ballot {ballot}")
+            return {"type": "ACCEPTED"}
 
-    # not really necessary to respond for paxos..
-    message = {"type": "ACK", "node_id": NODE_ID}
-    return message
-     
-threading.Thread(target=listener, daemon=True).start()
+        print(f"[{self.my_port}] Rejecting accept for ballot {ballot}")
+        return {"type": "REJECT"}
 
-# need this to stay alive 
-# this is for testing only
-while True:
-    cmd = input()
-    if cmd == "test":
-        print(paxos())
-    elif cmd == "blockchain":
-        print(blockchain)
+    def handle_decision(self, msg):
+        depth = tuple(msg["ballot"])[2]
+        self.accepted_val[depth] = msg["val"]
+        print(f"[{self.my_port}] Decision received for depth {depth}: {msg['val']}")
+        return {"type": "ACK"}

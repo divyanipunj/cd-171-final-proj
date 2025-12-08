@@ -3,18 +3,24 @@ import os
 from blockchain import Block
 
 class Storage:
-    def __init__(self, id):
-        self.file = f"node_{id}_state.json"
+    def __init__(self, node_id):
+        self.node_id = node_id
+        self.file = f"node_{node_id}_state.json"
 
-    def load_state(self, bc, balance):
+    def load_state(self, blockchain, table, seq_num, promised_ballot, accepted_ballot, accepted_val):
         if not os.path.exists(self.file):
+            print("No state file found.")
+            return
+
+        try:
+            with open(self.file, "r") as f:
+                data = json.load(f)
+        except Exception as e:
+            print(f"Error loading state: {e}")
             return
         
-        with open(self.file) as f:
-            data = json.load(f)
-
-        for key, value in data["balances"].items():
-            balance[int(key)] = value
+        for key, value in data.get("table", {}).items():
+            table[int(key)] = value
 
         for b in data["blockchain"]:
             block = Block(
@@ -26,15 +32,26 @@ class Storage:
                 hash=b["hash"],
                 tag=b["tag"]
             )
-            bc.blockchain.append(block)
+            blockchain.chain.append(block)
 
-    def persist(self, bc, balances):
+        seq_num.update(data.get("seq_num", {}))
+        promised_ballot.update(data.get("promised_ballot", {}))
+        accepted_ballot.update(data.get("accepted_ballot", {}))
+        accepted_val.update(data.get("accepted_val", {}))
+
+        print(f"State loaded for node {self.node_id}: {len(blockchain.chain)} blocks, balances {table}")
+
+    def persist(self, blockchain, table, seq_num, promised_ballot, accepted_ballot, accepted_val):
         data = {
-            "balances": balances,
-            "blockchain": []
+            "table": table,
+            "blockchain": [],
+            "seq_num": seq_num,
+            "promised_ballot": promised_ballot,
+            "accepted_ballot": accepted_ballot,
+            "accepted_val": accepted_val
         }
 
-        for block in bc.blockchain:
+        for block in blockchain.chain:
             data["blockchain"].append({
                 "sender_id": block.sender_id,
                 "receiver_id": block.receiver_id,
