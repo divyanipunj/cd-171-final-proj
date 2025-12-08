@@ -77,6 +77,8 @@ def handle_all_connections(conn):
                 response = handle_accept(message)
             elif message["type"] == "DECISION":
                 response = handle_decision(message)
+            elif message["type"] == "HELP": 
+                response = handle_help()
             if response: 
                 conn.sendall(json.dumps(response).encode())
         except json.JSONDecodeError:
@@ -293,7 +295,10 @@ def moneyTransfer(sender_id, receiver_id, amount):
 
     if table[sender_id] < amount:
         print("Insufficient funds.")
-        return
+        return    
+    
+    # check if up to date w blockchain (preemptive measure)
+    req_help()
 
     decided = paxos(sender_id, receiver_id, amount)
 
@@ -344,7 +349,70 @@ def fixProcess():
         accepted_val
     )
     failed = False
+
+    # check if up to date w blockchain
+    req_help()
+
     print("Process fixed.")
+
+def handle_help():
+    chain_data = []
+
+    for b in blockchain.chain:
+        chain_data.append({
+            "sender_id": b.sender_id,
+            "receiver_id": b.receiver_id,
+            "amount": b.amount,
+            "prev_hash": b.prev_hash,
+            "nonce": b.nonce,
+            "hash": b.hash,
+            "tag": b.tag
+        })
+
+    message = {"chain_data": chain_data, "table": table}
+    return message
+
+def req_help():
+    # check if up to date with blockchain
+    message = {"type": "HELP"}
+
+    highest_len = len(blockchain.chain)
+    adopt_chain = None
+    adopt_table = None
+ 
+    for port in MY_PORTS: 
+        response = send_message(port, message)
+        
+        if response:
+            req_table = response["table"]
+            req_chain = response["chain_data"]
+        
+            if(len(req_chain) > highest_len):
+                highest_len = len(req_chain)
+                adopt_chain = req_chain
+                adopt_table = req_table
+
+    if adopt_chain is not None and adopt_table is not None:
+        blockchain.chain = []
+        for b in adopt_chain:
+            block = Block(
+                sender_id=b["sender_id"],
+                receiver_id=b["receiver_id"],
+                amount=b["amount"],
+                prev_hash=b["prev_hash"],
+                nonce=b["nonce"],
+                hash=b["hash"],
+                tag=b["tag"]
+            )
+            blockchain.add(block)
+
+        for key, value in adopt_table.items():
+            table[int(key)] = value
+
+        print(f"Updated Process {NODE_ID} blockchain and bank balances.")
+    
+    storage.persist(blockchain, table, seq_num, promised_ballot, accepted_ballot, accepted_val)
+
 
 def printBlockchain():
     blockchain.print_blockchain()
