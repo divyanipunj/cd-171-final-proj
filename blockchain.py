@@ -18,12 +18,12 @@ class Blockchain:
     def compute_hash_pointer(self, sender_id, receiver_id, amount, nonce, prev_hash):
         data = f"{sender_id}{receiver_id}{amount}{nonce}{prev_hash}"
         encoded_string = data.encode('utf-8') # encode string to bytes
-        return hashlib.sha256(encoded_string).hexdigest() # hexidecimal representation of hash
+        return hashlib.sha256(encoded_string).hexdigest() # hexidecimal ver of hash
     
     def compute_nonce_hash(self, sender_id, receiver_id, amount, nonce):
         data = f"{sender_id}{receiver_id}{amount}{nonce}"
         encoded_string = data.encode('utf-8') # encode string to bytes
-        return hashlib.sha256(encoded_string).hexdigest() # hexidecimal representation of hash
+        return hashlib.sha256(encoded_string).hexdigest() # hexidecimal ver of hash
     
     def compute_nonce(self, sender_id, receiver_id, amount):
         while True:
@@ -38,4 +38,5 @@ class Blockchain:
 
     def print_blockchain(self):
         for i, block in enumerate(self.chain):
-            print(f"[{i}] {block.sender_id} -> {block.receiver_id} amount = {block.amount} hash = {block.hash} prev_hash = {block.prev_hash}")
+            print(f"[{i}] {block.sender_id} -> {block.receiver_id} \namount = {block.amount} \nnonce = {block.nonce} \nhash = {block.hash} \nprev_hash = {block.prev_hash} \nstatus = {block.tag}")
+            print("------------------")

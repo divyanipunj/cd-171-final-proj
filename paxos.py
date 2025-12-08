@@ -2,6 +2,7 @@ import socket
 import json
 import threading
 import argparse
+import time
 from storage import Storage
 from blockchain import Block, Blockchain
 
@@ -35,7 +36,6 @@ storage.load_state(
     accepted_val
 )
 failed = False
-# node = Node(NODE_ID, MY_PORT, PORTS)
 
 # DESIGN CHOICES (that you can change, chloe):
 # types of messages = prepare, promise, accept, accepted, decision, reject
@@ -44,18 +44,24 @@ failed = False
 
 # send message to a process
 def send_message(port, message):
+    time.sleep(3)
     try: 
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(5) # need to set time out ??
+            s.settimeout(10)
             s.connect((DEST_HOST, port))
             s.sendall(json.dumps(message).encode())
             data = s.recv(4096)
-            return json.loads(data.decode()) if data else None # change up?
-    except ConnectionRefusedError: # i don't what kind of error will happn, adjust accordingly
+            return json.loads(data.decode()) if data else None
+    except (ConnectionRefusedError, socket.timeout, OSError):
         return None
 
 # in the background, need to listen for messages from all proccesses. re-use client server code.
 def handle_all_connections(conn):
+    global failed
+    if failed:
+        conn.close()
+        return
+    
     with conn: 
         data = conn.recv(4096)
         if not data:
@@ -74,7 +80,7 @@ def handle_all_connections(conn):
             if response: 
                 conn.sendall(json.dumps(response).encode())
         except json.JSONDecodeError:
-            #if error decoding, just return
+            # if error decoding, just return
             return
 
 def listener(): 
@@ -82,7 +88,6 @@ def listener():
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind((DEST_HOST, MY_PORT))
         s.listen()
-        print(f"Client {NODE_ID} listening on port {MY_PORT}")
         
         while True:
             conn, addr = s.accept()
@@ -99,9 +104,10 @@ def paxos(sender_id, receiver_id, amount):
 
     ballot = (seq_num[depth], NODE_ID, depth)
     message = {"type": "PREPARE", "ballot": ballot}
-
+    
+    promised_ballot[depth] = ballot
+    
     responses_for_prepare = []
-    response = None
     for port in MY_PORTS: 
         response = send_message(port, message)
         
@@ -109,32 +115,48 @@ def paxos(sender_id, receiver_id, amount):
             responses_for_prepare.append(response)
 
     # check if any previous values were accepted:
-    nonce = None
+    accepted_value = None
     highest_ballot_accepted = None
-    accept_ballot_count = 0
+    accept_ballot_count = 1
     for response in responses_for_prepare:
-        if response["type"] == "PROMISE" and response["accepted_num"] is not None: # CASE WHERE PREV VALUE ACCEPTED
+        if response["type"] == "PROMISE" and response["accepted_num"] is not None:
             accept_ballot_count += 1
             old_accepted = tuple(response["accepted_num"])
 
             if highest_ballot_accepted is None or old_accepted > highest_ballot_accepted:
                 highest_ballot_accepted = old_accepted
-                nonce = response["accepted_val"]
+                accepted_value = response["accepted_val"]
         elif response["type"] == "PROMISE":
             accept_ballot_count += 1
     
-    if accept_ballot_count >= 2: # count self in majority so need 2 others to accept
-        if nonce is None:
+    if accept_ballot_count >= 3: # count self in majority so need 2 others to accept
+        prev_hash = blockchain.chain[-1].hash if blockchain.chain else "0"
+        
+        if accepted_value is None:
             # now process is "leader" and will try to find a nonce
             # chloe: find a nonce
             nonce, new_hash = blockchain.compute_nonce(sender_id, receiver_id, amount)
-            # if blockchain is empty, prev_hash is set to 0
-            prev_hash = blockchain.chain[-1].hash if blockchain.chain else 0
+        else:
+            nonce = accepted_value["nonce"]
+            new_hash = accepted_value["hash"]
+            sender_id = accepted_value["sender_id"]
+            receiver_id = accepted_value["receiver_id"]
+            amount = accepted_value["amount"]
+            prev_hash = accepted_value["prev_hash"]
 
-            # once the anonce is found, send accept messages
         message = {"type": "ACCEPT", "ballot": ballot, "nonce": nonce, "sender_id": sender_id, "receiver_id": receiver_id, "amount": amount, "prev_hash": prev_hash, "hash": new_hash}
+        
+        accepted_ballot[depth] = ballot
+        accepted_val[depth] = {
+            "nonce": nonce,
+            "sender_id": sender_id,
+            "receiver_id": receiver_id,
+            "amount": amount,
+            "prev_hash": prev_hash,
+            "hash": new_hash
+        }
             
-        # once a leader has found an anonce, send an accept message to all other processes
+        # once a leader has found an a nonce, send an accept message to all other processes
         responses_for_accept = []
         for port in MY_PORTS:
             response = send_message(port, message)
@@ -142,19 +164,34 @@ def paxos(sender_id, receiver_id, amount):
             if response: 
                 responses_for_accept.append(response)
         
-        accepted = 0
+        accepted = 1
         for response in responses_for_accept:
             if response["type"] == "ACCEPTED":
                 accepted += 1
-        if accepted >= 2: # count self in majority so need 2 others to accept
+        
+        if accepted >= 3: # count self in majority so need 2 others to accept
             # majority accepted, so a decision is made. send out the value
-            msg = {"type": "DECISION", "ballot": message["ballot"], "nonce": nonce}
+            msg = {"type": "DECISION", "ballot": ballot, "nonce": nonce, 
+                   "sender_id": sender_id, "receiver_id": receiver_id, "amount": amount,
+                   "prev_hash": prev_hash, "hash": new_hash}
 
             for port in MY_PORTS:
                 send_message(port, msg)
 
-            blockchain.chain.append(nonce) # update blockchain accordingly (chloe got this covered)
-
+            if len(blockchain.chain) == depth:
+                block = Block(
+                    sender_id=sender_id,
+                    receiver_id=receiver_id,
+                    amount=amount,
+                    prev_hash=prev_hash,
+                    nonce=nonce,
+                    hash=new_hash,
+                    tag="COMMITTED"
+                )
+                blockchain.add(block)
+            elif len(blockchain.chain) == depth + 1 and blockchain.chain[depth].tag == "TENTATIVE":
+                blockchain.chain[depth].tag = "COMMITTED"
+            
             return {"sender_id": sender_id, "receiver_id": receiver_id, "amount": amount, "prev_hash": prev_hash, "nonce": nonce, "hash": new_hash}
         else:
             return None
@@ -167,30 +204,36 @@ def handle_proposal(message):
     msg_seq_num, node_id, depth = ballot
 
     if depth not in promised_ballot:
-        promised_ballot[depth] = (-1, -1, -1) # ballor has not been seen before, initialize.
+        promised_ballot[depth] = (-1, -1, -1) # ballot has not been seen before, initialize.
 
     # promised_ballot vs incoming ballot ?
     if promised_ballot[depth][0] < msg_seq_num or ((promised_ballot[depth][0] == msg_seq_num and promised_ballot[depth][1] < node_id)):
         # then accept prepare
-        promised_ballot[depth] = message["ballot"]
-        response = {"type": "PROMISE", "ballot": message["ballot"],"node_id": NODE_ID, "accepted_num": accepted_ballot.get(depth), "accepted_val": accepted_val.get(depth)}
+        promised_ballot[depth] = ballot
+        response = {"type": "PROMISE", "ballot": ballot, "node_id": NODE_ID, "accepted_num": accepted_ballot.get(depth), "accepted_val": accepted_val.get(depth)}
         return response
     else:
         response = {"type": "REJECT", "ballot": promised_ballot[depth], "node_id": NODE_ID} # return the ballot that i have accepted
         return response
 
-# once leader finds an anonce, go ahead and accept it
+# once leader finds an a nonce, go ahead and accept it
 def handle_accept(message):
     ballot = tuple(message["ballot"])
     depth = ballot[2]
-    nonce = message["nonce"]
 
     if depth not in promised_ballot:
         promised_ballot[depth] = (-1, -1, -1) # ballot for depth has not been seen before, initialize.
     
     if promised_ballot[depth][0] < ballot[0] or (promised_ballot[depth][0] == ballot[0] and promised_ballot[depth][1] <= ballot[1]):
         accepted_ballot[depth] = ballot
-        accepted_val[depth] = message["nonce"]
+        accepted_val[depth] = {
+            "nonce": message["nonce"],
+            "sender_id": message["sender_id"],
+            "receiver_id": message["receiver_id"],
+            "amount": message["amount"],
+            "prev_hash": message["prev_hash"],
+            "hash": message["hash"]
+        }
         if len(blockchain.chain) == depth:
             block = Block(
                 sender_id=message["sender_id"],
@@ -202,6 +245,7 @@ def handle_accept(message):
                 tag="TENTATIVE"
             )
             blockchain.add(block)
+            storage.persist(blockchain, table, seq_num, promised_ballot, accepted_ballot, accepted_val)
         return {"type": "ACCEPTED", "ballot": ballot, "node_id": NODE_ID}
     else:
         return {"type": "REJECT", "node_id": NODE_ID, "ballot": promised_ballot[depth]} # return the ballot that i have accepted
@@ -210,21 +254,39 @@ def handle_accept(message):
 def handle_decision(message):
     ballot = tuple(message["ballot"])
     depth = ballot[2]
-    nonce = message["nonce"]
 
     # update blockchain accordingly
-    if len(blockchain.chain) == depth:
-        blockchain.chain.append(nonce)
-
+    if len(blockchain.chain) == depth + 1:
+        blockchain.chain[depth].tag = "COMMITTED"
+    elif len(blockchain.chain) == depth:
+        block = Block(
+            sender_id=message["sender_id"],
+            receiver_id=message["receiver_id"],
+            amount=message["amount"],
+            prev_hash=message["prev_hash"],
+            nonce=message["nonce"],
+            hash=message["hash"],
+            tag="COMMITTED"
+        )
+        blockchain.add(block)
+    
+    table[message["sender_id"]] -= message["amount"]
+    table[message["receiver_id"]] += message["amount"]
+    
+    storage.persist(blockchain, table, seq_num, promised_ballot, accepted_ballot, accepted_val)
+    
     # not really necessary to respond for paxos..
-    message = {"type": "ACK", "node_id": NODE_ID}
-    return message
+    return {"type": "ACK", "node_id": NODE_ID}
      
 threading.Thread(target=listener, daemon=True).start()
 
-# need this to stay alive 
-# this is for testing only
 def moneyTransfer(sender_id, receiver_id, amount):
+    global failed
+    
+    if failed:
+        print("Process failed.")
+        return
+    
     if sender_id != NODE_ID:
         print("You can only send from your node.")
         return
@@ -236,22 +298,11 @@ def moneyTransfer(sender_id, receiver_id, amount):
     decided = paxos(sender_id, receiver_id, amount)
 
     if not decided:
-        print("Consensus failed,")
+        print(f"Consensus failed for process {NODE_ID} proposing {sender_id} -> {receiver_id}: {amount}.")
         return
 
-    # block = Block(
-    #     sender_id=decided["sender_id"],
-    #     receiver_id=decided["receiver_id"],
-    #     amount=decided["amount"],
-    #     prev_hash=decided["prev_hash"],
-    #     nonce=decided["nonce"],
-    #     hash=decided["hash"],
-    #     tag="COMMITTED"
-    # )
-
-    # blockchain.add(block)
-    table[block.sender_id] -= block.amount
-    table[block.receiver_id] += block.amount
+    table[decided["sender_id"]] -= decided["amount"]
+    table[decided["receiver_id"]] += decided["amount"]
 
     storage.persist(
         blockchain,
@@ -261,9 +312,10 @@ def moneyTransfer(sender_id, receiver_id, amount):
         accepted_ballot,
         accepted_val
     )        
-    print("Money transferred.")
+    print(f"Money transferred from {sender_id} -> {receiver_id}: {amount}.")
 
 def failProcess():
+    global failed
     print("Process failed.")
     storage.persist(
         blockchain,
@@ -282,6 +334,7 @@ def failProcess():
     failed = True
 
 def fixProcess():
+    global failed
     storage.load_state(
         blockchain,
         table,

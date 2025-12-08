@@ -9,7 +9,6 @@ class Storage:
 
     def load_state(self, blockchain, table, seq_num, promised_ballot, accepted_ballot, accepted_val):
         if not os.path.exists(self.file):
-            print("No state file found.")
             return
 
         try:
@@ -45,8 +44,6 @@ class Storage:
         
         for key, value in data.get("accepted_val", {}).items():
             accepted_val[int(key)] = value
-
-        print(f"State loaded for node {self.node_id}: {len(blockchain.chain)} blocks, balances {table}")
 
     def persist(self, blockchain, table, seq_num, promised_ballot, accepted_ballot, accepted_val):
         data = {

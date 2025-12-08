@@ -21,3 +21,4 @@ stop:
 	@echo "Killing processes..."
 	@kill -9 `cat pids.txt 2>/dev/null` 2>/dev/null || true
 	@rm -f pids.txt
+	@rm -f node_*_state.json
